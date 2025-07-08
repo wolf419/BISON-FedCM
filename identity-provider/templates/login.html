@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+
+{% block script %}
+<script>
+    if (window.IdentityProvider) window.resizeTo(500, 600)
+
+    const form = document.querySelector('#form');
+    form.addEventListener('submit', submitForm)
+
+    function submitForm(e) {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        fetch(e.target.action, {
+            method: 'POST',
+            body: formData
+        }).then(onPostResponse)
+    }
+
+    function onPostResponse(response) {
+        if (!response.redirected) {
+            document.getElementById("failed").innerHTML = "Failed to log in"
+            return
+        }
+        navigator.login.setStatus("logged-in")
+        window.location.href = response.url;
+        if (window.IdentityProvider && IdentityProvider.close) {
+            IdentityProvider.close();
+            return
+        }
+    }
+</script>
+{% endblock %}
+
+{% block content %}
+<p id="failed"></p>
+<form id="form" action="/login" method="post">
+    <label for="username">Username:</label><br>
+    <input type="text" id="username" name="username" value="wolf42"><br>
+    <label for="password">Password:</label><br>
+    <input type="password" id="password" name="password" value="password123"><br>
+    <input id="login-button" type="submit" value="Login">
+</form>
+{% endblock %}

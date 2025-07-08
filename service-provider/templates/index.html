@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+
+{% block script %}
+<script type="module" src={{ url_for("static", filename="fedcm.js" ) }} defer></script>
+{% endblock %}
+
+{% block content %}
+<button id="loginButton">Login with IDP</button>
+{% endblock %}

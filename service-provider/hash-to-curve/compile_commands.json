@@ -1,0 +1,14 @@
+[
+  {
+    "arguments": [
+      "/usr/bin/g++",
+      "-c",
+      "-I",
+      "/home/jakob/boringssl/include",
+      "/home/jakob/boringssl/build/libcrypto.a",
+      "htc.cpp"
+    ],
+    "directory": "/home/jakob/University/2025-mp-beck/code/IDP/hash-to-curve",
+    "file": "/home/jakob/University/2025-mp-beck/code/IDP/hash-to-curve/htc.cpp"
+  }
+]

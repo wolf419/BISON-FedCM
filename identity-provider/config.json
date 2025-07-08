@@ -1,0 +1,10 @@
+  {
+    "accounts_endpoint": "auth/accounts",
+    "id_assertion_endpoint": "/auth/idtokens",
+    "login_url": "/login",
+    "bison" : true,
+    "branding": {
+      "background_color": "pink",
+      "color": "black"
+    }
+  }

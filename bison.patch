@@ -1,0 +1,498 @@
+diff --git a/content/browser/BUILD.gn b/content/browser/BUILD.gn
+index 327caa3eae273..b0c8a1f53dc7c 100644
+--- a/content/browser/BUILD.gn
++++ b/content/browser/BUILD.gn
+@@ -2428,6 +2428,8 @@ source_set("browser") {
+     "webid/identity_registry_delegate.h",
+     "webid/idp_network_request_manager.cc",
+     "webid/idp_network_request_manager.h",
++    "webid/bison.cc",
++    "webid/bison.h",
+     "webid/jwt_signer.cc",
+     "webid/jwt_signer.h",
+     "webid/sd_jwt.cc",
+diff --git a/content/browser/devtools/devtools_instrumentation.cc b/content/browser/devtools/devtools_instrumentation.cc
+index e56217766c21b..c1d9db9ae97c0 100644
+--- a/content/browser/devtools/devtools_instrumentation.cc
++++ b/content/browser/devtools/devtools_instrumentation.cc
+@@ -405,6 +405,13 @@ FederatedAuthRequestResultToProtocol(
+       return FederatedAuthRequestIssueReasonEnum::
+           SuppressedBySegmentationPlatform;
+     }
++    case FederatedAuthRequestResult::kRelyingPartyNotAuthenticatedForAudience: {
++      return FederatedAuthRequestIssueReasonEnum::
++          RelyingPartyNotAuthenticatedForAudience;
++    }
++    case FederatedAuthRequestResult::kIdpNoBisonSupport: {
++      return FederatedAuthRequestIssueReasonEnum::IdpNoBisonSupport;
++    }
+     case FederatedAuthRequestResult::kSuccess: {
+       NOTREACHED();
+     }
+diff --git a/content/browser/webid/bison.cc b/content/browser/webid/bison.cc
+new file mode 100644
+index 0000000000000..24b18eacf30c7
+--- /dev/null
++++ b/content/browser/webid/bison.cc
+@@ -0,0 +1,95 @@
++// Copyright 2025 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "content/browser/webid/bison.h"
++
++#include <openssl/bn.h>
++#include <openssl/ec.h>
++
++#include <cstdint>
++#include <iostream>
++
++#include "base/base64.h"
++#include "net/base/registry_controlled_domains/registry_controlled_domain.h"
++#include "url/gurl.h"
++#include "url/origin.h"
++
++namespace content::bison {
++// static
++std::unique_ptr<Bison> Bison::Create(const url::Origin& relying_party_origin) {
++  return std::make_unique<Bison>(relying_party_origin);
++}
++
++Bison::Bison(const url::Origin& relying_party_origin)
++  : relying_party_origin_(relying_party_origin) {}
++
++Bison::~Bison() = default;
++
++// registrable super domain ie. TLD+1
++bool Bison::IsRPAuthenticatedForAudience(std::string audience) {
++  const url::Origin audienceOrigin = url::Origin::Create(GURL(audience));
++
++  return net::registry_controlled_domains::SameDomainOrHost(
++      audienceOrigin, relying_party_origin_,
++      net::registry_controlled_domains::INCLUDE_PRIVATE_REGISTRIES);
++}
++
++std::string Bison::getBlindedAudience(std::string audience) {
++  const EC_GROUP* group = EC_group_p384();
++  EC_POINT* hash = EC_POINT_new(group);
++  EC_POINT* result = EC_POINT_new(group);
++  const uint8_t dst[] = "bison";
++  const uint8_t* msg = reinterpret_cast<const uint8_t*>(audience.c_str());
++  BIGNUM* order = BN_new();
++  r_.reset(BN_new());
++  BN_CTX* ctx = BN_CTX_new();
++
++  EC_hash_to_curve_p384_xmd_sha384_sswu(group, hash,
++                                        dst, sizeof(dst) - 1,
++                                        msg, audience.size());
++
++  EC_GROUP_get_order(group, order, ctx);
++  BN_rand_range_ex(r_.get() ,1,  order);
++  EC_POINT_mul(group, result, nullptr, hash, r_.get(), ctx);
++
++  std::string serialized_point = SerializeECPoint(group, result);
++
++  EC_POINT_free(hash);
++  EC_POINT_free(result);
++  BN_free(order);
++  BN_CTX_free(ctx);
++
++  return serialized_point;
++}
++
++std::string Bison::SerializeECPoint(const EC_GROUP* group, const EC_POINT* point) {
++  BN_CTX* ctx = BN_CTX_new();
++  size_t len = EC_POINT_point2oct(group, point,
++                                  POINT_CONVERSION_UNCOMPRESSED,
++                                  nullptr, 0, ctx);
++
++  std::vector<uint8_t> buffer(len);
++  EC_POINT_point2oct(group, point,
++                     POINT_CONVERSION_UNCOMPRESSED,
++                     buffer.data(), buffer.size(), ctx);
++
++  std::string base64_encoded = base::Base64Encode(buffer);
++
++  BN_CTX_free(ctx);
++  return base64_encoded;
++}
++
++std::string Bison::SerializeR() {
++  int size = BN_num_bytes(r_.get());
++  std::vector<unsigned char> buffer(size);
++  BN_bn2bin(r_.get(), buffer.data());
++
++  std::string base64_encoded;
++  base64_encoded = base::Base64Encode(buffer);
++
++  return base64_encoded;
++}
++
++
++}  // namespace content::bison
+diff --git a/content/browser/webid/bison.h b/content/browser/webid/bison.h
+new file mode 100644
+index 0000000000000..25e7592b79070
+--- /dev/null
++++ b/content/browser/webid/bison.h
+@@ -0,0 +1,39 @@
++// Copyright 2025 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#ifndef CONTENT_BROWSER_WEBID_BISON_H_
++#define CONTENT_BROWSER_WEBID_BISON_H_
++
++#include <memory>
++#include "content/common/content_export.h"
++#include "openssl/base.h"
++#include "url/origin.h"
++
++namespace content::bison {
++
++class CONTENT_EXPORT Bison {
++ public:
++  static std::unique_ptr<Bison> Create(const url::Origin& relying_party_origin);
++
++  explicit Bison(const url::Origin& relying_party);
++
++  virtual ~Bison();
++
++  Bison(const Bison&) = delete;
++  Bison& operator=(const Bison&) = delete;
++
++  bool IsRPAuthenticatedForAudience(std::string audience);
++  std::string getBlindedAudience(std::string audience);
++  std::string SerializeR();
++
++ private:
++  std::string SerializeECPoint(const EC_GROUP* group, const EC_POINT* point);
++
++  const url::Origin relying_party_origin_;
++  bssl::UniquePtr<BIGNUM> r_;
++};
++}  // namespace content::bison
++
++
++#endif  // CONTENT_BROWSER_WEBID_BISON_H_
+diff --git a/content/browser/webid/fedcm_metrics.h b/content/browser/webid/fedcm_metrics.h
+index decda47360477..c19ac4a05efab 100644
+--- a/content/browser/webid/fedcm_metrics.h
++++ b/content/browser/webid/fedcm_metrics.h
+@@ -82,8 +82,10 @@ enum class FedCmRequestIdTokenStatus {
+   kConfigNotMatchingType = 50,
+   kLoginPopupClosedWithoutSignin = 51,
+   kSuppressedBySegmentationPlatform = 52,
++  kRelyingPartyNotAuthenticatedForAudience = 53,
++  kIdpNoBisonSupport = 54,
+ 
+-  kMaxValue = kSuppressedBySegmentationPlatform
++  kMaxValue = kIdpNoBisonSupport
+ };
+ 
+ // This enum describes whether user sign-in states between IDP and browser
+diff --git a/content/browser/webid/federated_auth_request_impl.cc b/content/browser/webid/federated_auth_request_impl.cc
+index 2a8d244330c3d..9120db69b87c4 100644
+--- a/content/browser/webid/federated_auth_request_impl.cc
++++ b/content/browser/webid/federated_auth_request_impl.cc
+@@ -305,6 +305,8 @@ RequestTokenStatus FederatedAuthRequestResultToRequestTokenStatus(
+     case FederatedAuthRequestResult::kUiDismissedNoEmbargo:
+     case FederatedAuthRequestResult::kCorsError:
+     case FederatedAuthRequestResult::kSuppressedBySegmentationPlatform:
++    case FederatedAuthRequestResult::kRelyingPartyNotAuthenticatedForAudience:
++    case FederatedAuthRequestResult::kIdpNoBisonSupport:
+     case FederatedAuthRequestResult::kError: {
+       return RequestTokenStatus::kError;
+     }
+@@ -322,6 +324,8 @@ FederatedAuthRequestResultToMetricsEndpointErrorCode(
+     case FederatedAuthRequestResult::kMissingTransientUserActivation:
+     case FederatedAuthRequestResult::kRelyingPartyOriginIsOpaque:
+     case FederatedAuthRequestResult::kInvalidFieldsSpecified:
++    case FederatedAuthRequestResult::kRelyingPartyNotAuthenticatedForAudience:
++    case FederatedAuthRequestResult::kIdpNoBisonSupport:
+     case FederatedAuthRequestResult::kCanceled: {
+       return IdpNetworkRequestManager::MetricsEndpointErrorCode::kRpFailure;
+     }
+@@ -529,7 +533,8 @@ FederatedAuthRequestImpl::FederatedAuthRequestImpl(
+       api_permission_delegate_(api_permission_context),
+       auto_reauthn_permission_delegate_(auto_reauthn_permission_context),
+       permission_delegate_(permission_context),
+-      identity_registry_(identity_registry) {}
++      identity_registry_(identity_registry),
++      bison_(bison::Bison::Create(host.GetLastCommittedOrigin())) {}
+ 
+ FederatedAuthRequestImpl::~FederatedAuthRequestImpl() {
+   // Ensures key data members are destructed in proper order and resolves any
+@@ -1420,6 +1425,27 @@ void FederatedAuthRequestImpl::OnAllConfigAndWellKnownFetched(
+       continue;
+     }
+ 
++    if (idp_info->provider->config->bison &&
++        !bison_->IsRPAuthenticatedForAudience(
++            idp_info->provider->config->client_id)) {
++      OnFetchDataForIdpFailed(
++          std::move(idp_info),
++          FederatedAuthRequestResult::kRelyingPartyNotAuthenticatedForAudience,
++          TokenStatus::kRelyingPartyNotAuthenticatedForAudience,
++
++          /*should_delay_callback=*/true);
++      continue;
++    }
++    if (!idp_info->metadata.supports_bison &&
++        idp_info->provider->config->bison) {
++      OnFetchDataForIdpFailed(std::move(idp_info),
++                              FederatedAuthRequestResult::kIdpNoBisonSupport,
++                              TokenStatus::kIdpNoBisonSupport,
++
++                              /*should_delay_callback=*/true);
++      continue;
++    }
++
+     GURL accounts_endpoint = idp_info->endpoints.accounts;
+     std::string client_id = idp_info->provider->config->client_id;
+     const GURL& config_url = idp_info->provider->config->config_url;
+@@ -2316,7 +2342,7 @@ void FederatedAuthRequestImpl::OnAccountsResponseReceived(
+         }
+       }
+ 
+-      if (need_client_metadata &&
++      if (need_client_metadata && !idp_info->provider->config->bison &&
+           webid::IsEndpointSameOrigin(idp_info->provider->config->config_url,
+                                       idp_info->endpoints.client_metadata)) {
+         // Copy OnClientMetadataResponseReceived() parameters because `idp_info`
+@@ -2528,9 +2554,11 @@ void FederatedAuthRequestImpl::OnAccountSelected(const GURL& idp_config_url,
+ 
+   has_sent_token_request_ = true;
+ 
++  bool bison = idp_info.provider->config->bison;
++
+   bool idp_blindness =
+       idp_info.provider->format &&
+-      idp_info.provider->format == blink::mojom::Format::kSdJwt;
++      idp_info.provider->format == blink::mojom::Format::kSdJwt && !bison;
+ 
+   GURL endpoint;
+   std::string query;
+@@ -2549,6 +2577,17 @@ void FederatedAuthRequestImpl::OnAccountSelected(const GURL& idp_config_url,
+     endpoint = idp_info.endpoints.issuance;
+     query = ComputeUrlEncodedTokenPostDataForIssuers(
+         account_id, *sdjwt::ExportPublicKey(*private_key_), "vc+sd-jwt");
++  } else if (bison) {
++    endpoint = idp_info.endpoints.token;
++    query = ComputeUrlEncodedTokenPostData(
++        render_frame_host(),
++        bison_->getBlindedAudience(idp_info.provider->config->client_id),
++        idp_info.provider->nonce, account_id,
++        identity_selection_type_ != kExplicit, rp_mode_,
++        idp_info.provider->fields, disclosure_shown_for,
++        idp_info.provider->params_json.value_or(""),
++        idp_info.provider->config->type);
++
+   } else {
+     endpoint = idp_info.endpoints.token;
+     query = ComputeUrlEncodedTokenPostData(
+@@ -2561,7 +2600,7 @@ void FederatedAuthRequestImpl::OnAccountSelected(const GURL& idp_config_url,
+   }
+ 
+   network_manager_->SendTokenRequest(
+-      endpoint, account_id_, query, idp_blindness,
++      endpoint, account_id_, query, idp_blindness, bison,
+       base::BindOnce(&FederatedAuthRequestImpl::OnTokenResponseReceived,
+                      weak_ptr_factory_.GetWeakPtr(),
+                      idp_info.provider->Clone()),
+@@ -2835,6 +2874,13 @@ void FederatedAuthRequestImpl::OnTokenResponseReceived(
+           ? FedCmVerifyingDialogResult::kSuccessExplicit
+           : FedCmVerifyingDialogResult::kSuccessAutoReauthn;
+ 
++  std::string token;
++  if (idp->config->bison) {
++    token = bison_->SerializeR() + "." + result.token;
++  } else {
++    token = result.token;
++  }
++
+   bool should_show_error_ui =
+       result.error ||
+       status.parse_status != IdpNetworkRequestManager::ParseStatus::kSuccess;
+@@ -2845,8 +2891,7 @@ void FederatedAuthRequestImpl::OnTokenResponseReceived(
+                            idp->config->config_url, status, result.error)
+           : base::BindOnce(&FederatedAuthRequestImpl::CompleteTokenRequest,
+                            weak_ptr_factory_.GetWeakPtr(),
+-                           idp->config->config_url, status, result.token,
+-                           result.error,
++                           idp->config->config_url, status, token, result.error,
+                            /*should_delay_callback=*/false);
+ 
+   // When fetching id tokens we show a "Verify" sheet to users in case fetching
+diff --git a/content/browser/webid/federated_auth_request_impl.h b/content/browser/webid/federated_auth_request_impl.h
+index f542cf756728f..58ef5c96b7539 100644
+--- a/content/browser/webid/federated_auth_request_impl.h
++++ b/content/browser/webid/federated_auth_request_impl.h
+@@ -14,6 +14,7 @@
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/scoped_refptr.h"
+ #include "base/time/time.h"
++#include "content/browser/webid/bison.h"
+ #include "content/browser/webid/fedcm_metrics.h"
+ #include "content/browser/webid/federated_provider_fetcher.h"
+ #include "content/browser/webid/identity_registry.h"
+@@ -689,6 +690,8 @@ class CONTENT_EXPORT FederatedAuthRequestImpl
+   // the token's format is "vc+sd-jwt".
+   std::vector<std::pair<std::string, std::string>> disclosures_;
+ 
++  std::unique_ptr<bison::Bison> bison_;
++
+   base::WeakPtrFactory<FederatedAuthRequestImpl> weak_ptr_factory_{this};
+ };
+ 
+diff --git a/content/browser/webid/idp_network_request_manager.cc b/content/browser/webid/idp_network_request_manager.cc
+index ea271c8b04528..fd2568efbb87d 100644
+--- a/content/browser/webid/idp_network_request_manager.cc
++++ b/content/browser/webid/idp_network_request_manager.cc
+@@ -641,6 +641,11 @@ void OnConfigParsed(const GURL& provider,
+   idp_metadata.idp_login_url =
+       ExtractEndpoint(provider, response, kLoginUrlKey);
+ 
++  std::optional<bool> supports_bison = response.FindBool("bison");
++  if (supports_bison) {
++    idp_metadata.supports_bison = *supports_bison;
++  }
++
+   if (IsFedCmIdPRegistrationEnabled()) {
+     const base::Value::List* formats = response.FindList(kFormatsKey);
+     if (formats) {
+@@ -1179,6 +1184,7 @@ void IdpNetworkRequestManager::SendTokenRequest(
+     const std::string& account,
+     const std::string& url_encoded_post_data,
+     bool idp_blindness,
++    bool bison,
+     TokenRequestCallback callback,
+     ContinueOnCallback continue_on,
+     RecordErrorMetricsCallback record_error_metrics_callback) {
+@@ -1196,6 +1202,9 @@ void IdpNetworkRequestManager::SendTokenRequest(
+     // method is POST.
+     resource_request->request_initiator = url::Origin();
+   }
++  if (bison) {
++    resource_request->request_initiator = url::Origin();
++  }
+ 
+   DownloadJsonAndParse(
+       std::move(resource_request), url_encoded_post_data,
+diff --git a/content/browser/webid/idp_network_request_manager.h b/content/browser/webid/idp_network_request_manager.h
+index 791016cbad3f8..245aba9ee1f85 100644
+--- a/content/browser/webid/idp_network_request_manager.h
++++ b/content/browser/webid/idp_network_request_manager.h
+@@ -301,6 +301,7 @@ class CONTENT_EXPORT IdpNetworkRequestManager {
+       const std::string& account,
+       const std::string& url_encoded_post_data,
+       bool idp_blindness,
++      bool bison,
+       TokenRequestCallback callback,
+       ContinueOnCallback continue_on,
+       RecordErrorMetricsCallback record_error_metrics_callback);
+diff --git a/content/browser/webid/webid_utils.cc b/content/browser/webid/webid_utils.cc
+index d685672a745ba..1cf5a47d3cc47 100644
+--- a/content/browser/webid/webid_utils.cc
++++ b/content/browser/webid/webid_utils.cc
+@@ -325,6 +325,12 @@ std::string GetConsoleErrorMessageFromResult(
+              "is not interested in FedCM on this RP. For testing purposes, "
+              "disable the #fedcm-segmentation-platform flag.";
+     }
++    case FederatedAuthRequestResult::kRelyingPartyNotAuthenticatedForAudience: {
++      return "Relying party not authenticated for audience";
++    }
++    case FederatedAuthRequestResult::kIdpNoBisonSupport: {
++      return "IDP does not support bison";
++    }
+     case FederatedAuthRequestResult::kSuccess: {
+       // Should not be called with success, as we should not add a console
+       // message for success.
+diff --git a/content/public/browser/identity_request_dialog_controller.h b/content/public/browser/identity_request_dialog_controller.h
+index ed2068efc052c..1ffd33df7c0bc 100644
+--- a/content/public/browser/identity_request_dialog_controller.h
++++ b/content/public/browser/identity_request_dialog_controller.h
+@@ -87,6 +87,9 @@ struct CONTENT_EXPORT IdentityProviderMetadata {
+   // Whether this IdP has any filtered out account. This is reset to false each
+   // time the accounts dialog is shown and recomputed then.
+   bool has_filtered_out_account{false};
++
++  bool supports_bison{false};
++
+   // This will be an empty image if fetching failed.
+   gfx::Image brand_decoded_icon;
+ };
+diff --git a/third_party/blink/public/devtools_protocol/browser_protocol.pdl b/third_party/blink/public/devtools_protocol/browser_protocol.pdl
+index e9062166e49f7..8ace7136ac246 100644
+--- a/third_party/blink/public/devtools_protocol/browser_protocol.pdl
++++ b/third_party/blink/public/devtools_protocol/browser_protocol.pdl
+@@ -984,6 +984,8 @@ experimental domain Audits
+       UiDismissedNoEmbargo
+       CorsError
+       SuppressedBySegmentationPlatform
++      RelyingPartyNotAuthenticatedForAudience
++      IdpNoBisonSupport
+ 
+   type FederatedAuthUserInfoRequestIssueDetails extends object
+     properties
+diff --git a/third_party/blink/public/mojom/devtools/inspector_issue.mojom b/third_party/blink/public/mojom/devtools/inspector_issue.mojom
+index bd4fb8cbbdc74..b5d2b0865780f 100644
+--- a/third_party/blink/public/mojom/devtools/inspector_issue.mojom
++++ b/third_party/blink/public/mojom/devtools/inspector_issue.mojom
+@@ -259,6 +259,8 @@ enum FederatedAuthRequestResult {
+   kUiDismissedNoEmbargo,
+   kCorsError,
+   kSuppressedBySegmentationPlatform,
++  kRelyingPartyNotAuthenticatedForAudience,
++  kIdpNoBisonSupport
+ };
+ 
+ struct FederatedAuthRequestIssueDetails {
+diff --git a/third_party/blink/public/mojom/webid/federated_auth_request.mojom b/third_party/blink/public/mojom/webid/federated_auth_request.mojom
+index 093c5abd9dfe5..e035d03d3811b 100644
+--- a/third_party/blink/public/mojom/webid/federated_auth_request.mojom
++++ b/third_party/blink/public/mojom/webid/federated_auth_request.mojom
+@@ -83,6 +83,8 @@ struct IdentityProviderConfig {
+ 
+   // Can be an empty string to be omitted in the request sent to the provider.
+   string client_id;
++
++  bool bison;
+ };
+ 
+ // The format of the token that the relying party is requesting.
+diff --git a/third_party/blink/renderer/modules/credentialmanagement/credential_manager_type_converters.cc b/third_party/blink/renderer/modules/credentialmanagement/credential_manager_type_converters.cc
+index fc0e6010b27e2..c4c6822add2d3 100644
+--- a/third_party/blink/renderer/modules/credentialmanagement/credential_manager_type_converters.cc
++++ b/third_party/blink/renderer/modules/credentialmanagement/credential_manager_type_converters.cc
+@@ -956,6 +956,8 @@ TypeConverter<IdentityProviderConfigPtr, blink::IdentityProviderConfig>::
+ 
+   mojo_provider->config_url = blink::KURL(provider.configURL());
+   mojo_provider->client_id = provider.getClientIdOr("");
++  mojo_provider->bison = provider.getBisonOr(false);
++
+   return mojo_provider;
+ }
+ 
+@@ -978,6 +980,7 @@ TypeConverter<IdentityProviderRequestOptionsPtr,
+     mojo_options->config->config_url = blink::KURL(options.configURL());
+   }
+   mojo_options->config->client_id = options.getClientIdOr("");
++  mojo_options->config->bison = options.getBisonOr(false);
+ 
+   mojo_options->nonce = options.getNonceOr("");
+   mojo_options->login_hint = options.getLoginHintOr("");
+diff --git a/third_party/blink/renderer/modules/credentialmanagement/identity_provider_config.idl b/third_party/blink/renderer/modules/credentialmanagement/identity_provider_config.idl
+index 6a5d1e7583f16..a6bfcebcdd646 100644
+--- a/third_party/blink/renderer/modules/credentialmanagement/identity_provider_config.idl
++++ b/third_party/blink/renderer/modules/credentialmanagement/identity_provider_config.idl
+@@ -10,6 +10,9 @@ dictionary IdentityProviderConfig {
+   // Not marked as required to allow implementation of digital credentials.
+   // See crbug.com/1416939.
+   USVString clientId;
++
++  // Bison protocol
++  boolean bison;
+   // The type of Identity Provider that is compatible with the RP.
+   // Used to only use compatible providers.
+   [RuntimeEnabled=FedCmIdPRegistration] DOMString type;

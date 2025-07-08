@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+
+{% block script %}
+{% endblock %}
+
+{% block content %}
+<p>{{ failed }}</p>
+<form id="form" action="/signup" method="post">
+    <label for="username">Username:</label><br>
+    <input type="text" id="username" name="username" value="wolf42"><br>
+    <label for="email">Email:</label><br>
+    <input type="text" id="email" name="email" value="wolf42@mail.at"><br>
+    <label for="password">Password:</label><br>
+    <input type="password" id="password" name="password" value="password123"><br>
+    <input id="login-button" type="submit" value="Login">
+</form>
+{% endblock %}
