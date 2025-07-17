@@ -4,18 +4,24 @@
 
 https://chromium.googlesource.com/chromium/src/+/main/docs/linux/build_instructions.md#install
 
-## 2. Get the code
+## 2. Get the chromium source code
 
 ```
 mkdir ~/chromium && cd ~/chromium
 ```
 
 ```
-fetch --nohooks chromium
+fetch --nohooks --no-history chromium
 ```
 
 ```
 cd src
+```
+
+## 3. Checkout a specific commit
+
+```
+git fetch --unshallow
 ```
 
 ```
@@ -23,22 +29,31 @@ git checkout 0e2b5d09144f327ab3283051151208d7c7541753
 ```
 
 ```
+gclient sync --nohooks
+```
+
+Repeat until no errors occur
+
+
+## 4. Apply your patch
+
+```
 git apply /path/to/bison.patch
 ```
 
-## 3. Install additional build dependencies
+## 5. Install additional build dependencies
 
 ```
 ./build/install-build-deps.sh
 ```
 
-## 4. Sync dependencies and run hooks
+## 6. Sync dependencies and run hooks
 
 ```
 gclient sync
 ```
 
-## 5. Setting up the build
+## 7. Setting up the build
 
 ```
 gn args out/Default
@@ -50,13 +65,13 @@ This will bring up an editor. Enter:
 is_debug = false
 ```
 
-## 6. Build Chromium
+## 8. Build Chromium
 
 ```
 autoninja -C out/Default chrome
 ```
 
-## 7. Run Chromium
+## 9. Run Chromium
 
 ```
 out/Default/chrome
